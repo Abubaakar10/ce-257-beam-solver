@@ -1,3 +1,4 @@
+# pyrefly: ignore [missing-import]
 import matplotlib.pyplot as plt
 
 def plot_diagrams(x, V, M, spans):
