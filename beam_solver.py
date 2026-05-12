@@ -36,21 +36,40 @@ class Span:
         return total
 
 
-def solve_moments(spans):
+def solve_moments(spans, left_end='Pin', right_end='Pin'):
     n = len(spans) + 1
     moments = np.zeros(n)
-    n_eq = n - 2
-    if n_eq <= 0:
+    # Internal supports are always unknowns; end supports depend on type
+    unknowns = list(range(1, n - 1))
+    if left_end == 'Fixed':
+        unknowns = [0] + unknowns
+    if right_end == 'Fixed':
+        unknowns = unknowns + [n - 1]
+    n_eq = len(unknowns)
+    if n_eq == 0:
         return moments
+    idx_map = {s: j for j, s in enumerate(unknowns)}
     A = np.zeros((n_eq, n_eq))
     B = np.zeros(n_eq)
-    for i in range(1, n - 1):
-        L1, L2 = spans[i-1].length, spans[i].length
-        if i > 1: A[i-1, i-2] = L1
-        A[i-1, i-1] = 2 * (L1 + L2)
-        if i < n - 2: A[i-1, i] = L2
-        B[i-1] = -(spans[i-1].rhs_left() + spans[i].rhs_right())
-    moments[1:-1] = np.linalg.solve(A, B)
+    for j, i in enumerate(unknowns):
+        if i == 0:  # fixed left end — imaginary zero-length span to the left
+            Ll, Lr = 0, spans[0].length
+            rhs = -spans[0].rhs_right()
+        elif i == n - 1:  # fixed right end — imaginary zero-length span to the right
+            Ll, Lr = spans[-1].length, 0
+            rhs = -spans[-1].rhs_left()
+        else:  # internal support
+            Ll, Lr = spans[i-1].length, spans[i].length
+            rhs = -(spans[i-1].rhs_left() + spans[i].rhs_right())
+        if i - 1 in idx_map:
+            A[j, idx_map[i-1]] = Ll
+        A[j, j] = 2 * (Ll + Lr)
+        if i + 1 in idx_map:
+            A[j, idx_map[i+1]] = Lr
+        B[j] = rhs
+    x = np.linalg.solve(A, B)
+    for j, i in enumerate(unknowns):
+        moments[i] = x[j]
     return moments
 
 
@@ -85,7 +104,7 @@ class BeamApp:
     def __init__(self, root):
         self.root = root
         self.root.title("CE 257 Beam Solver (Three-Moment Equation)")
-        self.root.geometry("1050x700")
+        self.root.geometry("1050x720")
         self.spans = []
         self.setup_ui()
         self.root.after(100, self.draw_beam)
@@ -105,6 +124,19 @@ class BeamApp:
         ttk.Label(sf, text="Defined Spans (click to select):").grid(row=1, column=0, columnspan=3, sticky="w", padx=4, pady=(6,2))
         self.span_list = tk.Listbox(sf, height=5, exportselection=False)
         self.span_list.grid(row=2, column=0, columnspan=3, sticky="we", padx=4, pady=2)
+
+        # Support conditions
+        sup = ttk.LabelFrame(left, text="Support Conditions", padding=6)
+        sup.pack(fill=tk.X, pady=(0, 6))
+        types = ["Pin", "Roller", "Fixed", "Free End"]
+        ttk.Label(sup, text="Left End:").grid(row=0, column=0, padx=4, pady=3, sticky="w")
+        self.left_sup = tk.StringVar(value="Pin")
+        ttk.Combobox(sup, textvariable=self.left_sup, values=types, width=10,
+                     state="readonly").grid(row=0, column=1, padx=4, pady=3)
+        ttk.Label(sup, text="Right End:").grid(row=1, column=0, padx=4, pady=3, sticky="w")
+        self.right_sup = tk.StringVar(value="Pin")
+        ttk.Combobox(sup, textvariable=self.right_sup, values=types, width=10,
+                     state="readonly").grid(row=1, column=1, padx=4, pady=3)
 
         # Load entry
         lf = ttk.LabelFrame(left, text="Applied Loading", padding=6)
@@ -188,8 +220,25 @@ class BeamApp:
 
     def clear_all(self):
         self.spans = []; self.span_list.delete(0, tk.END)
+        self.left_sup.set("Pin"); self.right_sup.set("Pin")
         self.log("Cleared all."); self.draw_beam()
         for w in self.plot_frame.winfo_children(): w.destroy()
+
+    # ── Support Drawing ──────────────────────────────────────────────────
+    def _draw_support(self, x, y, stype):
+        if stype == "Pin":
+            self.canvas.create_polygon(x, y, x-10, y+18, x+10, y+18, fill="#2ecc71", outline="black")
+            self.canvas.create_line(x-14, y+18, x+14, y+18, width=3)
+        elif stype == "Roller":
+            r = 7
+            self.canvas.create_oval(x-r, y+4, x+r, y+4+2*r, fill="#f1c40f", outline="black", width=2)
+            self.canvas.create_line(x-14, y+4+2*r+2, x+14, y+4+2*r+2, width=3)
+        elif stype == "Fixed":
+            self.canvas.create_rectangle(x-4, y-20, x+4, y+20, fill="#7f8c8d", outline="black", width=2)
+            for dy in range(-18, 20, 8):
+                self.canvas.create_line(x-4, y+dy, x-14, y+dy+8, width=1.5, fill="#555")
+        elif stype == "Free End":
+            self.canvas.create_oval(x-4, y-4, x+4, y+4, fill="#e74c3c", outline="black", width=2)
 
     def draw_beam(self):
         self.canvas.delete("all"); self.canvas.update()
@@ -201,9 +250,15 @@ class BeamApp:
         total = sum(s.length for s in self.spans)
         scale, sx, y = (cw - 100) / total, 50, ch / 2
         self.canvas.create_line(sx, y, sx + total*scale, y, width=5, fill="#3498db")
-        cx = sx; self._tri(cx, y)
+        n_sup = len(self.spans) + 1
+        cx = sx
+        # Draw left-end support
+        self._draw_support(cx, y, self.left_sup.get())
         for i, sp in enumerate(self.spans):
-            ex = cx + sp.length * scale; self._tri(ex, y)
+            ex = cx + sp.length * scale
+            # Intermediate supports are Pin; last support uses right-end type
+            sup_type = self.right_sup.get() if i == len(self.spans) - 1 else "Pin"
+            self._draw_support(ex, y, sup_type)
             self.canvas.create_text((cx+ex)/2, y+30, text=f"{sp.length} m", fill="#2c3e50", font=("Arial", 9, "bold"))
             for ld in sp.loads:
                 if ld['type'] == 'uniform':
@@ -218,15 +273,12 @@ class BeamApp:
                     self.canvas.create_text(lx, y-63, text=f"{ld['mag']} kN", fill="#c0392b", font=("Arial", 9, "bold"))
             cx = ex
 
-    def _tri(self, x, y):
-        self.canvas.create_polygon(x, y, x-10, y+18, x+10, y+18, fill="#2ecc71", outline="black")
-        self.canvas.create_line(x-14, y+18, x+14, y+18, width=3)
-
     def solve(self):
         if not self.spans:
             messagebox.showwarning("Warning", "Add at least one span first."); return
         try:
-            self.log("Solving..."); moms = solve_moments(self.spans)
+            self.log("Solving...")
+            moms = solve_moments(self.spans, self.left_sup.get(), self.right_sup.get())
             for i, m in enumerate(moms): self.log(f"  M{i} = {m:.2f} kNm")
             x, V, M, rcts = compute_forces(self.spans, moms)
             for i, r in enumerate(rcts): self.log(f"  R{i} = {r:.2f} kN")
