@@ -17,15 +17,6 @@ A Python desktop application for analyzing **continuous beams** using the **Thre
 - **Support Reactions & Moments** — All computed values logged in the status panel
 - **Single-File Design** — The entire application is contained in one Python file (`beam_solver.py`)
 
----
-
-## Screenshots
-
-<!-- Add screenshots of your app here after running it -->
-<!-- ![Beam Solver Screenshot](screenshots/app.png) -->
-
----
-
 ## Getting Started
 
 ### Prerequisites
